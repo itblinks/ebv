@@ -221,7 +221,7 @@ int* DetectRegions() {
 					int r = currentRun->row;
 					//loop over color planes of pixel
 					for (int p = 0; p < NUM_CHROM; p++) {
-						//Do as Histogram for cb and cr values
+						//do a histogram for cb and cr values
 						int HistIndex = data.u8TempImage[THRESHOLD][(r * nc + c)
 								* NUM_COLORS + p + 1]; //+1 to ignore y
 						//increment the histogram at the corresponding cb, cr value
@@ -301,7 +301,7 @@ int* DetectRegions() {
 					int r = currentRun->row;
 					//loop over color planes of pixel
 					for (int p = 0; p < NUM_COLORS; p++) {
-						//Do as histogram for BGR values
+						//do a histogram for BGR values
 						int HistIndex = data.u8TempImage[SENSORIMG][(r * nc + c)
 						* NUM_COLORS + p];
 						//increment the histogram at the corresponding BGR value
@@ -316,7 +316,7 @@ int* DetectRegions() {
 				}
 				currentRun = currentRun->next;
 			}while (currentRun != NULL);
-			//is blue value greater than red value? if true assume RED object
+			//is BLUE value greater than RED value? if true, assume RED object
 			(bestIndex[0] < bestIndex[2]) ?
 			(*(boxColor + o) = RED) : (*(boxColor + o) = BLUE);
 			//write current object to console
