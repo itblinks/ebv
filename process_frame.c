@@ -13,6 +13,7 @@
 #include <stdlib.h>
 
 #define IMG_SIZE NUM_COLORS*OSC_CAM_MAX_IMAGE_WIDTH*OSC_CAM_MAX_IMAGE_HEIGHT
+#define YCbCr 0
 
 const int nc = OSC_CAM_MAX_IMAGE_WIDTH;
 const int nr = OSC_CAM_MAX_IMAGE_HEIGHT;
@@ -55,6 +56,8 @@ void ProcessFrame() {
 #if NUM_COLORS == 3 //if color is used, the image threshold is stored in index1
 
 		ChangeDetection();
+		Erode_3x3(INDEX1, INDEX0);
+		Dilate_3x3(INDEX0, INDEX1);
 		int* BoxColor = DetectRegions();
 		DrawBoundingBoxes(BoxColor);
 		free(BoxColor);
@@ -77,7 +80,6 @@ void ProcessFrame() {
 		}
 
 #endif
-
 
 	}
 }
@@ -143,10 +145,8 @@ unsigned char OtsuThreshold(int InIndex) {
 		if (bestloc > best) {
 			best = bestloc;
 			best_i = K;
-			//OscLog(INFO, "%d %d %d %d %d\n", i1, w0, w1, mu0, mu1);
 		}
 	}
-	//OscLog(INFO, "%d %f\n", best_i, best);
 	return (unsigned char) best_i;
 }
 
@@ -177,7 +177,7 @@ void Dilate_3x3(int InIndex, int OutIndex) {
 		}
 	}
 }
-
+#if YCbCr == 1
 int* DetectRegions() {
 	struct OSC_PICTURE Pic;
 	int i;
@@ -206,44 +206,47 @@ int* DetectRegions() {
 	}
 	//loop over objects
 	for (int o = 0; o < ImgRegions.noOfObjects; o++) {
-		//get pointer to root run of current object
-		struct OSC_VIS_REGIONS_RUN* currentRun = ImgRegions.objects[o].root;
-		//loop over runs of current object
-		memset(Hist, 0, sizeof(Hist));
-		memset(best, 0, sizeof(best));
-		memset(bestIndex, 0, sizeof(bestIndex));
-		do {
-			//loop over pixel of current run
-			for (int c = currentRun->startColumn; c <= currentRun->endColumn;
-					c++) {
-				int r = currentRun->row;
-				//loop over color planes of pixel
-				for (int p = 0; p < NUM_CHROM; p++) {
-					//Do as Histogram for cb and cr values
-					int HistIndex = data.u8TempImage[THRESHOLD][(r * nc + c)
-							* NUM_COLORS + p + 1]; //+1 to ignore y
-					Hist[p][HistIndex] += 1; //increment the histogram at the corresponding cb, cr value
-
-					//check if current histogram position is bigger than the max value
-					if (Hist[p][HistIndex] > best[p]) {
-						//new max value found!
-						//set best to current histogram value and store the index
-						best[p] = Hist[p][HistIndex];
-						bestIndex[p] = HistIndex;
+		//make a histrogram if area is bigger than MinArea
+		if (ImgRegions.objects[o].area > MinArea) {
+			//get pointer to root run of current object
+			struct OSC_VIS_REGIONS_RUN* currentRun = ImgRegions.objects[o].root;
+			//loop over runs of current object
+			memset(Hist, 0, sizeof(Hist));
+			memset(best, 0, sizeof(best));
+			memset(bestIndex, 0, sizeof(bestIndex));
+			do {
+				//loop over pixel of current run
+				for (int c = currentRun->startColumn;
+						c <= currentRun->endColumn; c++) {
+					int r = currentRun->row;
+					//loop over color planes of pixel
+					for (int p = 0; p < NUM_CHROM; p++) {
+						//Do as Histogram for cb and cr values
+						int HistIndex = data.u8TempImage[THRESHOLD][(r * nc + c)
+								* NUM_COLORS + p + 1]; //+1 to ignore y
+						//increment the histogram at the corresponding cb, cr value
+						//check if current histogram position is bigger than the max value
+						if (++Hist[p][HistIndex] > best[p]) {
+							//new max value found!
+							//set best to current histogram value and store the index
+							best[p] = Hist[p][HistIndex];
+							bestIndex[p] = HistIndex;
+						}
 					}
 				}
+				currentRun = currentRun->next;
+			} while (currentRun != NULL);
+			//is cr value greater than zero? (greater than 128), if true assume RED object
+			(bestIndex[1] > 128) ? (*(boxColor + o) = RED) : (*(boxColor + o) =
+											BLUE);
+			//write current object to console
+			printf("Cb value for object %d is %d\n", o, bestIndex[0]);
+			printf("Cr value for object %d is %d\n", o, bestIndex[1]);
+			if (*(boxColor + o) == RED) {
+				printf("color of object %d is RED\n", o);
+			} else {
+				printf("color of object %d is BLUE\n", o);
 			}
-			currentRun = currentRun->next;
-		} while (currentRun != NULL);
-		//is cr value greater than zero? (greater than 128), if true assume RED object
-		(bestIndex[1] > 128) ? (*(boxColor + o) = RED) : (*(boxColor + o) = BLUE);
-		//write current object to console
-		printf("Cb value for object %d is %d\n", o, bestIndex[0]);
-		printf("Cr value for object %d is %d\n", o, bestIndex[1]);
-		if (*(boxColor + o) == RED) {
-			printf("color of object %d is RED\n", o);
-		} else {
-			printf("color of object %d is BLUE\n", o);
 		}
 	}
 	//clear console screen, only valid on POSIX
@@ -253,6 +256,89 @@ int* DetectRegions() {
 	return 0;
 #endif
 }
+
+#else
+int* DetectRegions() {
+	struct OSC_PICTURE Pic;
+	int i;
+	//set pixel value to 1 in INDEX0 because the image MUST be binary (i.e. values of 0 and 1)
+	for (i = 0; i < IMG_SIZE; i++) {
+		data.u8TempImage[INDEX0][i] = data.u8TempImage[INDEX1][i] ? 1 : 0;
+	}
+
+	//wrap image INDEX0 in picture struct
+	Pic.data = data.u8TempImage[INDEX0];
+	Pic.width = nc;
+	Pic.height = nr;
+	Pic.type = OSC_PICTURE_BINARY;
+
+	//now do region labeling and feature extraction
+	OscVisLabelBinary(&Pic, &ImgRegions);
+	OscVisGetRegionProperties(&ImgRegions);
+#if NUM_COLORS == 3
+	unsigned int Hist[NUM_COLORS][256];
+	unsigned int best[NUM_COLORS];
+	unsigned int bestIndex[NUM_COLORS];
+	int* boxColor = (int *) malloc(sizeof(int) * (ImgRegions.noOfObjects + 1));
+	memset(boxColor, 0, sizeof(sizeof(int) * ImgRegions.noOfObjects + 1));
+	if (boxColor == NULL) {
+		return 0;
+	}
+	//loop over objects
+	for (int o = 0; o < ImgRegions.noOfObjects; o++) {
+		//make a histrogram if area is bigger than MinArea
+		if (ImgRegions.objects[o].area > MinArea) {
+			//get pointer to root run of current object
+			struct OSC_VIS_REGIONS_RUN* currentRun = ImgRegions.objects[o].root;
+			//loop over runs of current object
+			memset(Hist, 0, sizeof(Hist));
+			memset(best, 0, sizeof(best));
+			memset(bestIndex, 0, sizeof(bestIndex));
+			do {
+				//loop over pixel of current run
+				for (int c = currentRun->startColumn;
+						c <= currentRun->endColumn; c++) {
+					int r = currentRun->row;
+					//loop over color planes of pixel
+					for (int p = 0; p < NUM_COLORS; p++) {
+						//Do as histogram for BGR values
+						int HistIndex = data.u8TempImage[SENSORIMG][(r * nc + c)
+						* NUM_COLORS + p];
+						//increment the histogram at the corresponding BGR value
+						//check if current histogram position is bigger than the max value
+						if (++Hist[p][HistIndex] > best[p]) {
+							//new max value found!
+							//set best to current histogram value and store the index
+							best[p] = Hist[p][HistIndex];
+							bestIndex[p] = HistIndex;
+						}
+					}
+				}
+				currentRun = currentRun->next;
+			}while (currentRun != NULL);
+			//is blue value greater than red value? if true assume RED object
+			(bestIndex[0] < bestIndex[2]) ?
+			(*(boxColor + o) = RED) : (*(boxColor + o) = BLUE);
+			//write current object to console
+			printf("BLUE  value for object %d is %d\n", o, bestIndex[0]);
+			printf("GREEN value for object %d is %d\n", o, bestIndex[1]);
+			printf("RED   value for object %d is %d\n", o, bestIndex[2]);
+			if (*(boxColor + o) == RED) {
+				printf("color of object %d is RED\n", o);
+			} else {
+				printf("color of object %d is BLUE\n", o);
+			}
+		}
+	}
+
+	//clear console screen, only valid on POSIX
+	printf("\e[1;1H\e[2J");
+	return boxColor;
+#elif NUM_COLORS == 1
+	return 0;
+#endif
+}
+#endif
 void DrawBoundingBoxes(int* color) {
 	uint16 o;
 	for (o = 0; o < ImgRegions.noOfObjects; o++) {
@@ -275,6 +361,7 @@ void DrawBoundingBoxes(int* color) {
 	}
 }
 
+#if YCbCr == 1
 void ChangeDetection() {
 #define NumFgrCol 2
 
@@ -337,3 +424,51 @@ void ChangeDetection() {
 	}
 }
 
+#else
+void ChangeDetection() {
+#define NumFgrCol 2
+
+	uint8 FrgCol[NumFgrCol][3] = { {26, 12, 117}, {77, 34, 1}};
+	int r, c, frg, p;
+
+	memset(data.u8TempImage[INDEX0], 0, IMG_SIZE);
+	memset(data.u8TempImage[INDEX1], 0, IMG_SIZE);
+	memset(data.u8TempImage[BACKGROUND], 0, IMG_SIZE);
+	memset(data.u8TempImage[THRESHOLD], 0, IMG_SIZE);
+
+//loop over the rows
+	for (r = 0; r < nr * nc; r += nc) {
+//loop over the columns
+		for (c = 0; c < nc; c++) {
+			//loop over the different Frg colors and find smallest difference
+			int MinDif = 1 << 30;
+			int MinInd = 0;
+			for (frg = 0; frg < NumFgrCol; frg++) {
+				int Dif = 0;
+				//loop over the color planes (R,G,B) and sum up the difference, save in threshold
+				for (p = 0; p < NUM_COLORS; p++) {
+					Dif += abs(
+							(int) data.u8TempImage[SENSORIMG][(r + c)
+							* NUM_COLORS + p] - (int) FrgCol[frg][p]);
+				}
+				//see if the difference is smaller than the current minimum difference
+				if (Dif < MinDif) {
+					MinDif = Dif;
+					MinInd = frg;
+				}
+			}
+			//if the difference is smaller than threshold value
+			if (MinDif < data.ipc.state.nThreshold) {
+				//set pixel value to 255 in THRESHOLD image for further processing
+				//(we use only the first third of the image buffer)
+				data.u8TempImage[INDEX1][(r + c)] = 255;
+				//set pixel value to Frg color in BACKGROUND image for visualization
+				for (p = 0; p < NUM_COLORS; p++) {
+					data.u8TempImage[BACKGROUND][(r + c) * NUM_COLORS + p] =
+					FrgCol[MinInd][p];
+				}
+			}
+		}
+	}
+}
+#endif
